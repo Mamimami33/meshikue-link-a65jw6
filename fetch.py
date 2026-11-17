@@ -136,7 +136,9 @@ def main():
 
     msgs = fetch_messages(channel_id, token)
     url_re = re.compile(r"https?://[^\s<>\]]+")
-    found = {}  # canonical url -> posted_at（最初の投稿日時）
+    # リンク集自身のURLは対象外にする
+    EXCLUDE = ("muse.ai/s/", "mamimami33.github.io/meshikue-link-a65jw6")
+    found = {}  # dedupe key -> (url, posted_at)。YouTubeは動画IDで同一判定する
     for m in msgs:
         urls = url_re.findall(m.get("content") or "")
         for e in m.get("embeds") or []:
@@ -144,11 +146,18 @@ def main():
                 urls.append(e["url"])
         for u in urls:
             cu = canonicalize(u.rstrip(").,"))
-            if cu not in found:
-                found[cu] = m["timestamp"]
+            if any(x in cu for x in EXCLUDE):
+                continue
+            vid = youtube_id(cu) if "youtu" in cu else None
+            key = f"yt:{vid}" if vid else cu
+            if key not in found:
+                found[key] = (cu, m["timestamp"])
+            elif "/shorts/" in cu:
+                # 同じ動画に Shorts 形式があればそちらを優先する
+                found[key] = (cu, found[key][1])
 
     items = []
-    for url, posted_at in found.items():
+    for url, posted_at in found.values():
         if url in existing:
             item = existing[url]
             item["posted_at"] = posted_at
