@@ -58,7 +58,8 @@
 <div class="empty" id="msg" hidden></div>
 <script>
 const ALIASES = { "鶏肉":["チキン"], "豚肉":["豚バラ","ポーク"], "うどん":["饂飩"], "ホットドッグ":["ホットドック"] };
-let items = [], activeTag = null;
+let items = [], activeTag = null, chipsExpanded = false;
+const CHIP_LIMIT = 8;
 
 function searchable(it) {
   let s = [it.title, it.channel, ...(it.tags||[])].join(" ").toLowerCase();
@@ -114,11 +115,22 @@ function renderChips() {
   for (const it of items) for (const t of (it.tags||[])) counts[t] = (counts[t]||0)+1;
   const box = document.getElementById("tagchips");
   box.innerHTML = "";
-  for (const t of Object.keys(counts).sort((a,b)=>counts[b]-counts[a])) {
+  const all = Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
+  const shown = chipsExpanded ? all : all.slice(0, CHIP_LIMIT);
+  // 選択中のタグが表示範囲外なら先頭に入れる
+  if (activeTag && !shown.includes(activeTag) && all.includes(activeTag)) shown.unshift(activeTag);
+  for (const t of shown) {
     const b = document.createElement("button");
     b.className = "chip"; b.type = "button"; b.textContent = t;
     b.setAttribute("aria-pressed", activeTag === t ? "true" : "false");
     b.addEventListener("click", () => setTag(activeTag === t ? null : t));
+    box.appendChild(b);
+  }
+  if (all.length > CHIP_LIMIT) {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button";
+    b.textContent = chipsExpanded ? "閉じる" : `もっと見る（${all.length - CHIP_LIMIT}）`;
+    b.addEventListener("click", () => { chipsExpanded = !chipsExpanded; renderChips(); });
     box.appendChild(b);
   }
 }
