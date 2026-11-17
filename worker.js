@@ -6,6 +6,7 @@
 //   DISCORD_BOT_TOKEN (Secret) : Discordボットのトークン
 //   GITHUB_PAT        (Secret) : 対象リポジトリの Contents 読み書き用キー
 //   THREAD_LINK       (Text)   : Discordスレッドのリンク
+//   MUSIC_THREAD_LINK (Text)   : 音楽スレッドのリンク（/music 用）
 //
 // data.json にはアカウント名・投稿文を含めない（fetch.py と同じ整形）。
 
@@ -155,6 +156,48 @@ export class Counter {
   }
 }
 
+// 音楽スレッドの YouTube URL から連続再生プレイリストを作るページ
+async function handleMusic(env) {
+  const headers = { "Content-Type": "text/html; charset=UTF-8" };
+  const page = (inner) => `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>音楽プレイリスト</title><style>body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:32rem;padding:0 1rem;text-align:center}.btn{display:inline-block;padding:.9rem 1.6rem;background:#2563eb;color:#fff;border-radius:.6rem;text-decoration:none;font-weight:600}</style></head><body><h1>音楽プレイリスト</h1>${inner}</body></html>`;
+  const link = String(env.MUSIC_THREAD_LINK || "");
+  const channelId = (link.match(/\d{15,}/g) || []).pop();
+  if (!channelId) {
+    return new Response(page("<p>音楽スレッドが未設定です。</p>"), { headers });
+  }
+  const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
+  const urlRe = /https?:\/\/[^\s<>\]]+/g;
+  const ids = [];
+  const seen = new Set();
+  for (const m of msgs) {
+    const urls = (m.content || "").match(urlRe) || [];
+    for (const e of m.embeds || []) if (e.url) urls.push(e.url);
+    for (const raw of urls) {
+      let vid = null;
+      try { vid = youtubeId(canonicalize(raw.replace(/[).,]+$/, ""))); } catch { vid = null; }
+      if (vid && /^[\w-]{11}$/.test(vid) && !seen.has(vid)) {
+        seen.add(vid);
+        ids.push(vid);
+      }
+    }
+  }
+  // 毎回違う順番にする（シャッフル）
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  if (!ids.length) {
+    return new Response(page("<p>曲が見つかりませんでした。</p>"), { headers });
+  }
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
+  const links = chunks.map((c, i) =>
+    `<p><a class="btn" href="https://www.youtube.com/watch_videos?video_ids=${c.join(",")}" target="_blank" rel="noopener">プレイリストを開く${chunks.length > 1 ? `（パート${i + 1}）` : ""}</a></p>`).join("");
+  return new Response(page(
+    `<p>${ids.length}曲（開くたびにシャッフルされます）</p>${links}<p style="color:#666;font-size:.85rem">開いた先で、自分のYouTubeアカウントに保存できます。</p>`
+  ), { headers });
+}
+
 async function runUpdate(env) {
   const channelId = (String(env.THREAD_LINK || "").match(/\d{15,}/g) || []).pop();
   if (!channelId) throw new Error("THREAD_LINK からチャンネルIDが読み取れませんでした。");
@@ -205,6 +248,14 @@ export default {
     };
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
     const url = new URL(request.url);
+    // 音楽プレイリスト
+    if (url.pathname === "/music") {
+      try { return await handleMusic(env); }
+      catch (e) {
+        return new Response(`<p>取得に失敗しました：${String(e.message || e)}</p>`,
+          { status: 500, headers: { "Content-Type": "text/html; charset=UTF-8" } });
+      }
+    }
     // カウンター系
     if (url.pathname === "/counts" || url.pathname === "/view" || url.pathname === "/fav") {
       const stub = env.COUNTER.get(env.COUNTER.idFromName("global"));
