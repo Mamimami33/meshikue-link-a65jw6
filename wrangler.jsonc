@@ -4,5 +4,10 @@
   "main": "worker.js",
   "compatibility_date": "2026-11-01",
   // 5分ごとの定期実行
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // 閲覧数・お気に入り数のカウンター
+  "durable_objects": {
+    "bindings": [{ "name": "COUNTER", "class_name": "Counter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Counter"] }]
 }
