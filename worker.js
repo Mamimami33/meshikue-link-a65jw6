@@ -120,6 +120,41 @@ async function ghPut(pat, sha, text) {
   if (!r.ok) throw new Error(`GitHub 書き込みエラー: ${r.status}`);
 }
 
+// 閲覧数・お気に入り数のカウンター（Durable Object、SQLite保存）
+export class Counter {
+  constructor(state, env) {
+    this.sql = state.storage.sql;
+    this.sql.exec("CREATE TABLE IF NOT EXISTS counts (url TEXT PRIMARY KEY, views INTEGER NOT NULL DEFAULT 0, favs INTEGER NOT NULL DEFAULT 0)");
+  }
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/all") {
+      const out = {};
+      for (const r of this.sql.exec("SELECT url, views, favs FROM counts")) {
+        out[r.url] = { views: r.views, favs: r.favs };
+      }
+      return Response.json(out);
+    }
+    if (url.pathname === "/inc" && request.method === "POST") {
+      const body = await request.json();
+      const itemUrl = body && body.url;
+      const kind = body && body.kind;
+      if (!itemUrl || (kind !== "view" && kind !== "fav")) {
+        return Response.json({ ok: false, error: "bad request" }, { status: 400 });
+      }
+      const col = kind === "view" ? "views" : "favs";
+      const d = kind === "view" ? 1 : (body.delta === -1 ? -1 : 1);
+      this.sql.exec(
+        `INSERT INTO counts (url, ${col}) VALUES (?, ?) ON CONFLICT(url) DO UPDATE SET ${col} = MAX(0, ${col} + ?)`,
+        itemUrl, Math.max(0, d), d
+      );
+      const row = [...this.sql.exec("SELECT views, favs FROM counts WHERE url = ?", itemUrl)][0];
+      return Response.json({ ok: true, views: row.views, favs: row.favs });
+    }
+    return new Response("not found", { status: 404 });
+  }
+}
+
 async function runUpdate(env) {
   const channelId = (String(env.THREAD_LINK || "").match(/\d{15,}/g) || []).pop();
   if (!channelId) throw new Error("THREAD_LINK からチャンネルIDが読み取れませんでした。");
@@ -164,11 +199,33 @@ export default {
   async fetch(request, env) {
     const cors = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
       "Content-Type": "application/json",
     };
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
     const url = new URL(request.url);
+    // カウンター系
+    if (url.pathname === "/counts" || url.pathname === "/view" || url.pathname === "/fav") {
+      const stub = env.COUNTER.get(env.COUNTER.idFromName("global"));
+      if (url.pathname === "/counts") {
+        const r = await stub.fetch("https://counter/all");
+        return new Response(await r.text(), { headers: cors });
+      }
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ ok: false, error: "POST only" }), { status: 405, headers: cors });
+      }
+      const body = await request.json().catch(() => null);
+      const r = await stub.fetch("https://counter/inc", {
+        method: "POST",
+        body: JSON.stringify({
+          url: body && body.url,
+          kind: url.pathname === "/view" ? "view" : "fav",
+          delta: body && body.delta,
+        }),
+      });
+      return new Response(await r.text(), { status: r.status, headers: cors });
+    }
     if (url.pathname !== "/update") {
       return new Response(JSON.stringify({ ok: true, message: "recipe updater" }), { headers: cors });
     }
