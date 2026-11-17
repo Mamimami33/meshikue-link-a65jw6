@@ -1,0 +1,8 @@
+{
+  // Cloudflare Workers の設定（GitHub連携デプロイ用）
+  "name": "meshikue-link-a65jw6",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  // 5分ごとの定期実行
+  "triggers": { "crons": ["*/5 * * * *"] }
+}
