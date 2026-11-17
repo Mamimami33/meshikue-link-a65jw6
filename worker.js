@@ -189,8 +189,36 @@ async function handleMusic(env, request) {
   let part = parseInt(new URL(request.url).searchParams.get("part") || "1", 10);
   if (isNaN(part) || part < 1) part = 1;
   if (part > chunks.length) part = chunks.length;
-  return Response.redirect(
-    `https://www.youtube.com/watch_videos?video_ids=${chunks[part - 1].join(",")}`, 302);
+  const webUrl = `https://www.youtube.com/watch_videos?video_ids=${chunks[part - 1].join(",")}`;
+  const ua = request.headers.get("User-Agent") || "";
+  if (!/iPhone|iPad|iPod|Android/i.test(ua)) {
+    return Response.redirect(webUrl, 302); // PCはそのままWebへ
+  }
+  // スマホ: 一時プレイリストを実IDに解決し、YouTubeアプリ用リンクで開く。
+  // 解決できない場合は従来どおりWebへ飛ばす。
+  let appUrl = null;
+  try {
+    const r = await fetch(webUrl, { redirect: "manual" });
+    const loc = r.headers.get("Location") || "";
+    const lu = new URL(loc, "https://www.youtube.com");
+    const list = lu.searchParams.get("list");
+    const v = lu.searchParams.get("v");
+    if (list && v) {
+      appUrl = /Android/i.test(ua)
+        ? `intent://www.youtube.com/watch?v=${v}&list=${list}#Intent;package=com.google.android.youtube;scheme=https;S.browser_fallback_url=${encodeURIComponent(webUrl)};end`
+        : `youtube://www.youtube.com/watch?v=${v}&list=${list}`;
+    }
+  } catch { appUrl = null; }
+  if (!appUrl) return Response.redirect(webUrl, 302);
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>音楽プレイリスト</title></head><body><p>YouTubeアプリで開いています…</p><p><a href="${webUrl}">開かない場合はこちら（Web）</a></p><script>
+var done = false;
+function goWeb() { if (!done) { done = true; location.replace(${JSON.stringify(webUrl)}); } }
+document.addEventListener("visibilitychange", function () { if (document.hidden) done = true; });
+window.addEventListener("pagehide", function () { done = true; });
+location.href = ${JSON.stringify(appUrl)};
+setTimeout(goWeb, 2500);
+</script></body></html>`;
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=UTF-8" } });
 }
 
 async function runUpdate(env) {
