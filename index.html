@@ -135,23 +135,40 @@ function renderChips() {
   }
 }
 function setTag(t) { activeTag = t; render(); }
+const UPDATE_URL = "https://meshikue-link-a65jw6.stmamiya.workers.dev/update";
+async function loadData() {
+  const r = await fetch("data.json?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error(r.status);
+  items = await r.json();
+  document.getElementById("updated").textContent = "最終確認 " + new Date().toLocaleTimeString("ja-JP");
+  render();
+}
 async function load() {
-  const btn = document.getElementById("refresh");
-  btn.disabled = true; btn.textContent = "更新中…";
-  try {
-    const r = await fetch("data.json?t=" + Date.now(), { cache: "no-store" });
-    if (!r.ok) throw new Error(r.status);
-    items = await r.json();
-    document.getElementById("updated").textContent = "最終確認 " + new Date().toLocaleTimeString("ja-JP");
-    render();
-  } catch (e) {
+  try { await loadData(); }
+  catch (e) {
     const msg = document.getElementById("msg");
     msg.hidden = false; msg.textContent = "データを読み込めませんでした。少し待ってから更新してください。";
-  } finally {
-    btn.disabled = false; btn.textContent = "更新";
   }
 }
-document.getElementById("refresh").addEventListener("click", load);
+// 更新ボタン：Discordへ取りに行ってから、最新データを表示する
+async function refresh() {
+  const btn = document.getElementById("refresh");
+  btn.disabled = true; btn.textContent = "取得中…";
+  let failed = false;
+  try {
+    const r = await fetch(UPDATE_URL, { cache: "no-store" });
+    const j = await r.json();
+    if (!j.ok) failed = true;
+  } catch (e) { failed = true; }
+  try { await loadData(); }
+  catch (e) {
+    const msg = document.getElementById("msg");
+    msg.hidden = false; msg.textContent = "データを読み込めませんでした。少し待ってから更新してください。";
+  }
+  if (failed) document.getElementById("updated").textContent = "取得に失敗しました（前回のデータを表示中）";
+  btn.disabled = false; btn.textContent = "更新";
+}
+document.getElementById("refresh").addEventListener("click", refresh);
 document.getElementById("search").addEventListener("input", render);
 document.getElementById("sort").addEventListener("change", render);
 load();
