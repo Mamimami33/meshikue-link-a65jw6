@@ -175,7 +175,7 @@ export default {
         keys: Object.keys(env).sort(),
         thread_link_length: tl.length,
         thread_link_has_id: /\d{15,}/.test(tl),
-        version: "diag-1",
+        version: "diag-2",
       };
       return new Response(JSON.stringify({ ok: true, message: "recipe updater", diag }), { headers: cors });
     }
