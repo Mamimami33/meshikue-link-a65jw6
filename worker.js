@@ -1,4 +1,4 @@
-// レシピリンク集「更新ボタン」用 Cloudflare Worker
+// レシピリンク集「更新ボタン」用 Cloudflare Worker（再デプロイ用に更新）
 // ページの更新ボタンから呼ばれると、Discordスレッドを取得して
 // GitHubリポジトリの data.json を更新する。
 //
