@@ -170,7 +170,14 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
     const url = new URL(request.url);
     if (url.pathname !== "/update") {
-      return new Response(JSON.stringify({ ok: true, message: "recipe updater" }), { headers: cors });
+      const tl = String(env.THREAD_LINK || "");
+      const diag = {
+        keys: Object.keys(env).sort(),
+        thread_link_length: tl.length,
+        thread_link_has_id: /\d{15,}/.test(tl),
+        version: "diag-1",
+      };
+      return new Response(JSON.stringify({ ok: true, message: "recipe updater", diag }), { headers: cors });
     }
     try {
       const result = await runUpdate(env);
