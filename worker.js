@@ -179,4 +179,8 @@ export default {
       return new Response(JSON.stringify({ ok: false, error: String(e.message || e) }), { status: 500, headers: cors });
     }
   },
+  // 定期実行（Workerの Triggers で Cron を設定すると呼ばれる）
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runUpdate(env));
+  },
 };
