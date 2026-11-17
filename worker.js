@@ -156,18 +156,18 @@ export class Counter {
   }
 }
 
-// 音楽スレッドの YouTube URL から連続再生プレイリストを作るページ
-async function handleMusic(env) {
-  const headers = { "Content-Type": "text/html; charset=UTF-8" };
-  const page = (inner) => `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>音楽プレイリスト</title><style>body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:32rem;padding:0 1rem;text-align:center}.btn{display:inline-block;padding:.9rem 1.6rem;background:#2563eb;color:#fff;border-radius:.6rem;text-decoration:none;font-weight:600}</style></head><body><h1>音楽プレイリスト</h1>${inner}</body></html>`;
+// 音楽スレッドの YouTube URL から連続再生プレイリストへ直接飛ばす（最新順）
+// パート指定は ?part=2 のように受ける（1パート50曲）
+async function handleMusic(env, request) {
+  const headers = { "Content-Type": "text/plain; charset=UTF-8" };
   const link = String(env.MUSIC_THREAD_LINK || "");
   const channelId = (link.match(/\d{15,}/g) || []).pop();
   if (!channelId) {
-    return new Response(page("<p>音楽スレッドが未設定です。</p>"), { headers });
+    return new Response("音楽スレッドが未設定です。", { headers });
   }
   const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
   const urlRe = /https?:\/\/[^\s<>\]]+/g;
-  const ids = [];
+  const ids = []; // Discord API の返却順＝新しい投稿順
   const seen = new Set();
   for (const m of msgs) {
     const urls = (m.content || "").match(urlRe) || [];
@@ -181,21 +181,16 @@ async function handleMusic(env) {
       }
     }
   }
-  // 毎回違う順番にする（シャッフル）
-  for (let i = ids.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [ids[i], ids[j]] = [ids[j], ids[i]];
-  }
   if (!ids.length) {
-    return new Response(page("<p>曲が見つかりませんでした。</p>"), { headers });
+    return new Response("曲が見つかりませんでした。", { headers });
   }
   const chunks = [];
   for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
-  const links = chunks.map((c, i) =>
-    `<p><a class="btn" href="https://www.youtube.com/watch_videos?video_ids=${c.join(",")}" target="_blank" rel="noopener">プレイリストを開く${chunks.length > 1 ? `（パート${i + 1}）` : ""}</a></p>`).join("");
-  return new Response(page(
-    `<p>${ids.length}曲（開くたびにシャッフルされます）</p>${links}<p style="color:#666;font-size:.85rem">開いた先で、自分のYouTubeアカウントに保存できます。</p>`
-  ), { headers });
+  let part = parseInt(new URL(request.url).searchParams.get("part") || "1", 10);
+  if (isNaN(part) || part < 1) part = 1;
+  if (part > chunks.length) part = chunks.length;
+  return Response.redirect(
+    `https://www.youtube.com/watch_videos?video_ids=${chunks[part - 1].join(",")}`, 302);
 }
 
 async function runUpdate(env) {
@@ -250,10 +245,10 @@ export default {
     const url = new URL(request.url);
     // 音楽プレイリスト
     if (url.pathname === "/music") {
-      try { return await handleMusic(env); }
+      try { return await handleMusic(env, request); }
       catch (e) {
-        return new Response(`<p>取得に失敗しました：${String(e.message || e)}</p>`,
-          { status: 500, headers: { "Content-Type": "text/html; charset=UTF-8" } });
+        return new Response(`取得に失敗しました：${String(e.message || e)}`,
+          { status: 500, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       }
     }
     // カウンター系
