@@ -72,7 +72,14 @@ async function fetchMessages(channelId, token) {
   while (true) {
     let url = `${API}/channels/${channelId}/messages?limit=100`;
     if (before) url += `&before=${before}`;
-    const r = await fetch(url, { headers: { ...UA, Authorization: `Bot ${token}` } });
+    let r = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      r = await fetch(url, { headers: { ...UA, Authorization: `Bot ${token}` } });
+      if (r.status !== 429) break;
+      // アクセス集中（429）のときは、Discordの指定する時間だけ待って再試行する
+      const wait = Number(r.headers.get("Retry-After")) || Number(r.headers.get("X-RateLimit-Reset-After")) || 1;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(wait * 1000 + 250, 8000)));
+    }
     if (r.status === 401) throw new Error("Discord認証に失敗しました（401）。トークンを確認してください。");
     if (r.status === 403) throw new Error("権限がありません（403）。ボットの参加と権限を確認してください。");
     if (r.status === 404) throw new Error("チャンネルが見つかりません（404）。THREAD_LINKを確認してください。");
@@ -165,20 +172,34 @@ async function handleMusic(env, request) {
   if (!channelId) {
     return new Response("音楽スレッドが未設定です。", { headers });
   }
-  const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
-  const urlRe = /https?:\/\/[^\s<>\]]+/g;
-  const ids = []; // Discord API の返却順＝新しい投稿順
-  const seen = new Set();
-  for (const m of msgs) {
-    const urls = (m.content || "").match(urlRe) || [];
-    for (const e of m.embeds || []) if (e.url) urls.push(e.url);
-    for (const raw of urls) {
-      let vid = null;
-      try { vid = youtubeId(canonicalize(raw.replace(/[).,]+$/, ""))); } catch { vid = null; }
-      if (vid && /^[\w-]{11}$/.test(vid) && !seen.has(vid)) {
-        seen.add(vid);
-        ids.push(vid);
+  // 曲IDの一覧は60秒キャッシュし、Discord APIへのアクセス集中（429エラー）を防ぐ
+  let ids = []; // Discord API の返却順＝新しい投稿順
+  const cacheKey = new Request("https://cache.internal/music-ids-v1");
+  try {
+    const hit = await caches.default.match(cacheKey);
+    if (hit) ids = await hit.json();
+  } catch {}
+  if (!ids.length) {
+    const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
+    const urlRe = /https?:\/\/[^\s<>\]]+/g;
+    const seen = new Set();
+    for (const m of msgs) {
+      const urls = (m.content || "").match(urlRe) || [];
+      for (const e of m.embeds || []) if (e.url) urls.push(e.url);
+      for (const raw of urls) {
+        let vid = null;
+        try { vid = youtubeId(canonicalize(raw.replace(/[).,]+$/, ""))); } catch { vid = null; }
+        if (vid && /^[\w-]{11}$/.test(vid) && !seen.has(vid)) {
+          seen.add(vid);
+          ids.push(vid);
+        }
       }
+    }
+    if (ids.length) {
+      try {
+        await caches.default.put(cacheKey, new Response(JSON.stringify(ids),
+          { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=60" } }));
+      } catch {}
     }
   }
   if (!ids.length) {
