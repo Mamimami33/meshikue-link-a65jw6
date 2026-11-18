@@ -107,8 +107,8 @@ function b64decode(b64) {
   return new TextDecoder().decode(bytes);
 }
 
-async function ghGet(pat) {
-  const r = await fetch(`${GH_API}/repos/${REPO}/contents/data.json`, {
+async function ghGet(pat, path = "data.json") {
+  const r = await fetch(`${GH_API}/repos/${REPO}/contents/${path}`, {
     headers: { ...UA, Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json" },
   });
   if (r.status === 404) return { sha: null, text: null };
@@ -117,10 +117,10 @@ async function ghGet(pat) {
   return { sha: j.sha, text: b64decode(j.content) };
 }
 
-async function ghPut(pat, sha, text) {
-  const body = { message: "データを更新（更新ボタン）", content: b64encode(text) };
+async function ghPut(pat, sha, text, path = "data.json", message = "データを更新（更新ボタン）") {
+  const body = { message, content: b64encode(text) };
   if (sha) body.sha = sha;
-  const r = await fetch(`${GH_API}/repos/${REPO}/contents/data.json`, {
+  const r = await fetch(`${GH_API}/repos/${REPO}/contents/${path}`, {
     method: "PUT",
     headers: { ...UA, Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -163,6 +163,39 @@ export class Counter {
   }
 }
 
+// 音楽スレッドの投稿から YouTube 動画IDの一覧を取り出す（新しい投稿順）
+function extractMusicIds(msgs) {
+  const urlRe = /https?:\/\/[^\s<>\]]+/g;
+  const ids = [];
+  const seen = new Set();
+  for (const m of msgs) {
+    const urls = (m.content || "").match(urlRe) || [];
+    for (const e of m.embeds || []) if (e.url) urls.push(e.url);
+    for (const raw of urls) {
+      let vid = null;
+      try { vid = youtubeId(canonicalize(raw.replace(/[).,]+$/, ""))); } catch { vid = null; }
+      if (vid && /^[\w-]{11}$/.test(vid) && !seen.has(vid)) {
+        seen.add(vid);
+        ids.push(vid);
+      }
+    }
+  }
+  return ids;
+}
+
+// 音楽スレッドを取得して music.json を更新する（定期実行と更新ボタンから呼ばれる）
+async function refreshMusic(env) {
+  const channelId = (String(env.MUSIC_THREAD_LINK || "").match(/\d{15,}/g) || []).pop();
+  if (!channelId) return { music: 0, musicChanged: false };
+  const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
+  const ids = extractMusicIds(msgs);
+  const { sha, text } = await ghGet(env.GITHUB_PAT, "music.json");
+  const newText = JSON.stringify(ids);
+  const changed = text === null || newText.trim() !== String(text).trim();
+  if (changed) await ghPut(env.GITHUB_PAT, sha, newText, "music.json", "音楽リストを更新");
+  return { music: ids.length, musicChanged: changed };
+}
+
 // 音楽スレッドの YouTube URL から連続再生プレイリストへ直接飛ばす（最新順）
 // パート指定は ?part=2 のように受ける（1パート50曲）
 async function handleMusic(env, request) {
@@ -172,35 +205,20 @@ async function handleMusic(env, request) {
   if (!channelId) {
     return new Response("音楽スレッドが未設定です。", { headers });
   }
-  // 曲IDの一覧は60秒キャッシュし、Discord APIへのアクセス集中（429エラー）を防ぐ
-  let ids = []; // Discord API の返却順＝新しい投稿順
-  const cacheKey = new Request("https://cache.internal/music-ids-v1");
+  // 普段は定期更新で用意された music.json（公開ページ側）から読む。
+  // これにより、開くたびに Discord へアクセスして混雑エラーになるのを防ぐ。
+  let ids = [];
   try {
-    const hit = await caches.default.match(cacheKey);
-    if (hit) ids = await hit.json();
+    const r = await fetch("https://mamimami33.github.io/meshikue-link-a65jw6/music.json");
+    if (r.ok) {
+      const j = await r.json();
+      if (Array.isArray(j)) ids = j.filter((x) => /^[\w-]{11}$/.test(x));
+    }
   } catch {}
   if (!ids.length) {
+    // music.json がまだ無い場合だけ、その場で Discord から取得する
     const msgs = await fetchMessages(channelId, env.DISCORD_BOT_TOKEN);
-    const urlRe = /https?:\/\/[^\s<>\]]+/g;
-    const seen = new Set();
-    for (const m of msgs) {
-      const urls = (m.content || "").match(urlRe) || [];
-      for (const e of m.embeds || []) if (e.url) urls.push(e.url);
-      for (const raw of urls) {
-        let vid = null;
-        try { vid = youtubeId(canonicalize(raw.replace(/[).,]+$/, ""))); } catch { vid = null; }
-        if (vid && /^[\w-]{11}$/.test(vid) && !seen.has(vid)) {
-          seen.add(vid);
-          ids.push(vid);
-        }
-      }
-    }
-    if (ids.length) {
-      try {
-        await caches.default.put(cacheKey, new Response(JSON.stringify(ids),
-          { headers: { "Content-Type": "application/json", "Cache-Control": "max-age=60" } }));
-      } catch {}
-    }
+    ids = extractMusicIds(msgs);
   }
   if (!ids.length) {
     return new Response("曲が見つかりませんでした。", { headers });
@@ -317,13 +335,18 @@ export default {
     }
     try {
       const result = await runUpdate(env);
-      return new Response(JSON.stringify({ ok: true, ...result }), { headers: cors });
+      let music = {};
+      try { music = await refreshMusic(env); } catch {}
+      return new Response(JSON.stringify({ ok: true, ...result, ...music }), { headers: cors });
     } catch (e) {
       return new Response(JSON.stringify({ ok: false, error: String(e.message || e) }), { status: 500, headers: cors });
     }
   },
   // 定期実行（Workerの Triggers で Cron を設定すると呼ばれる）
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runUpdate(env));
+    ctx.waitUntil((async () => {
+      try { await runUpdate(env); } catch {}
+      try { await refreshMusic(env); } catch {}
+    })());
   },
 };
